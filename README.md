@@ -14,8 +14,15 @@ All of the constants are contained in the `inotify` table returned by
 require.  Constants are named after their counterparts in the C header
 file (for example: `inotify.IN_ACCESS`).
 
-The only function to be found in the inotify table is `init`, which
-takes no arguments and returns an inotify handle.
+The only function to be found in the inotify table is `init`, which returns an
+inotify handle.
+
+`init` can optionally take a table a single argument.  This table should
+contain attributes for the inotify handle's creation.  The supported
+attributes are:
+
+  * **blocking** - If set to false, the I/O operations performed on this
+    inotify handle are non-blocking.  Otherwise, they are blocking.
 
 Inotify handles have a variety of methods:
 
@@ -23,15 +30,18 @@ Inotify handles have a variety of methods:
 
 Reads events from the handle, returning a table.  Each element of the table
 is itself a table, with the members of the `inotify_event` struct as its
-keys and values (except for len).  If an error occurs, `nil`, the error
-message, and errno are returned.
+keys and values (except for len).  If the handle is in non-blocking mode and
+no events are available, an empty table is returned. If an error occurs, `nil`,
+the error message, and errno are returned.
 
 ### handle:events()
 
 Returns an iterator that reads events from the handle, one at a time.
 Each value yielded from the iterator is a table with the members of the
 `inotify_event` struct as its keys and values (except for len).  If an
-error occurs during reading, an error is thrown.
+error occurs during reading, an error is thrown.  If this method is
+run on a handle in non-blocking mode, it will yield events until no
+more events are available without blocking.
 
 ### handle:close()
 
@@ -63,6 +73,11 @@ local wd = handle:addwatch('/tmp/foo/', options)
 
 Removes the watch specified by watchid from the list of watches for this
 inotify handle.  Returns true on success, and `nil, error, errno` on error.
+
+### handle:fileno()
+
+Returns the integer file descriptor for the given handle.  Useful when
+used in combination with an event loop.
 
 Example
 -------
@@ -96,7 +111,7 @@ local handle = inotify.init()
 -- Watch for new files and renames
 local wd = handle:addwatch('/home/rob/', inotify.IN_CREATE, inotify.IN_MOVE)
 
-for ev in handle:events()
+for ev in handle:events() do
     print(ev.name .. ' was created or renamed')
 end
 
@@ -106,10 +121,12 @@ handle:rmwatch(wd)
 handle:close()
 ```
 
-Deprecation Warning
+No More Global Table
 -------------------
 
-As version 0.2, relying on the global `inotify` (as opposed to using the
-return value of `require`) is deprecated.  Doing this will result in
-a warning.  If you do not wish to see this warning, simply downgrade to
-linotify 0.1 (the versions are identical except for this warning).
+As of version 0.3, the global `inotify` table has been completely removed.
+You now need to handle the return value from `require`, like so:
+
+```lua
+local inotify = require 'inotify'
+```

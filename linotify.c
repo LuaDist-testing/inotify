@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2009-2012 Robert Hoelz <rob@hoelz.ro>
+* Copyright (c) 2009-2013 Robert Hoelz <rob@hoelz.ro>
 *
 * Permission is hereby granted, free of charge, to any person obtaining a copy
 * of this software and associated documentation files (the "Software"), to deal
@@ -27,16 +27,6 @@
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
-
-#define INOTIFY_LIB_NAME "inotify"
-/* This definition causes a proxy
- * table to be placed into the global
- * namespace so that you may still use
- * _G.inotify.  If you wish to remove
- * this but you don't want to wait for
- * 0.3, simply remove this #define or
- * set it to 0. */
-#define LINOTIFY_01_COMPAT 1
 
 #define MT_NAME "INOTIFY_HANDLE"
 #define READ_BUFFER_SIZE 1024
@@ -71,8 +61,18 @@ static int handle_error(lua_State *L)
 static int init(lua_State *L)
 {
     int fd;
+    int flags = 0;
 
-    if((fd = inotify_init()) == -1) {
+    if(lua_type(L, 1) == LUA_TTABLE) {
+        lua_getfield(L, 1, "blocking");
+
+        if(lua_type(L, -1) != LUA_TNIL && !lua_toboolean(L, -1)) {
+            flags |= IN_NONBLOCK;
+        }
+        lua_pop(L, 1);
+    }
+
+    if((fd = inotify_init1(flags)) == -1) {
         return handle_error(L);
     } else {
         push_inotify_handle(L, fd);
@@ -117,6 +117,10 @@ static int handle_read(lua_State *L)
 
     fd = get_inotify_handle(L, 1);
     if((bytes = read(fd, buffer, 1024)) < 0) {
+        if(errno == EAGAIN || errno == EWOULDBLOCK) {
+            lua_newtable(L);
+            return 1;
+        }
         return handle_error(L);
     }
     lua_newtable(L);
@@ -148,6 +152,10 @@ handle_events_iterator(lua_State *L)
         context->offset = 0;
 
         if((context->bytes_remaining = read(fd, context->buffer, READ_BUFFER_SIZE)) < 0) {
+            if(errno == EAGAIN || errno == EWOULDBLOCK) {
+                lua_pushnil(L);
+                return 1;
+            }
             return luaL_error(L, "read error: %s\n", strerror(errno));
         }
     }
@@ -246,32 +254,6 @@ static luaL_Reg handle_funcs[] = {
     lua_pushinteger(L, s);\
     lua_setfield(L, -2, #s);
 
-#if LINOTIFY_01_COMPAT
-static int
-inotify_proxy_table__index(lua_State *L)
-{
-    if(! lua_toboolean(L, lua_upvalueindex(3))) {
-        lua_getfield(L, lua_upvalueindex(1), "print");
-        lua_pushliteral(L, "Relying on the global table installed by require 'inotify' is deprecated.  Please use the return value of require in the future.");
-        lua_call(L, 1, 0);
-
-        lua_getfield(L, lua_upvalueindex(1), INOTIFY_LIB_NAME);
-        if(lua_equal(L, 1, -1)) {
-            lua_pushvalue(L, lua_upvalueindex(2));
-            lua_setfield(L, lua_upvalueindex(1), INOTIFY_LIB_NAME);
-        }
-        lua_pop(L, 1);
-
-        lua_pushboolean(L, 1);
-        lua_replace(L, lua_upvalueindex(3));
-    }
-
-    lua_pushvalue(L, 2);
-    lua_gettable(L, lua_upvalueindex(2));
-    return 1;
-}
-#endif
-
 int luaopen_inotify(lua_State *L)
 {
     luaL_newmetatable(L, MT_NAME);
@@ -293,20 +275,6 @@ int luaopen_inotify(lua_State *L)
     luaL_setfuncs(L, inotify_funcs,0);
 #else
     luaL_register(L, NULL, inotify_funcs);
-#endif
-
-#if LINOTIFY_01_COMPAT && LUA_VERSION_NUM <= 501
-    lua_newtable(L);
-    lua_pushvalue(L, -1);
-    lua_setglobal(L, "inotify");
-    lua_newtable(L);
-    lua_pushvalue(L, LUA_GLOBALSINDEX);
-    lua_pushvalue(L, -4);
-    lua_pushboolean(L, 0);
-    lua_pushcclosure(L, inotify_proxy_table__index, 3);
-    lua_setfield(L, -2, "__index");
-    lua_setmetatable(L, -2);
-    lua_pop(L, 1);
 #endif
 
     register_constant(IN_ACCESS);
