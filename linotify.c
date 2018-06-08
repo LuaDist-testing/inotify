@@ -29,7 +29,23 @@
 #include <unistd.h>
 
 #define INOTIFY_LIB_NAME "inotify"
+/* This definition causes a proxy
+ * table to be placed into the global
+ * namespace so that you may still use
+ * _G.inotify.  If you wish to remove
+ * this but you don't want to wait for
+ * 0.3, simply remove this #define or
+ * set it to 0. */
+#define LINOTIFY_01_COMPAT 1
+
 #define MT_NAME "INOTIFY_HANDLE"
+#define READ_BUFFER_SIZE 1024
+
+struct inotify_context {
+    char buffer[READ_BUFFER_SIZE];
+    int offset;
+    int bytes_remaining;
+};
 
 void push_inotify_handle(lua_State *L, int fd)
 {
@@ -70,6 +86,26 @@ static int handle_fileno(lua_State *L)
     return 1;
 }
 
+static void
+push_inotify_event(lua_State *L, struct inotify_event *ev)
+{
+    lua_createtable(L, 0, 4);
+
+    lua_pushinteger(L, ev->wd);
+    lua_setfield(L, -2, "wd");
+
+    lua_pushinteger(L, ev->mask);
+    lua_setfield(L, -2, "mask");
+
+    lua_pushinteger(L, ev->cookie);
+    lua_setfield(L, -2, "cookie");
+
+    if(ev->len) {
+        lua_pushstring(L, ev->name);
+        lua_setfield(L, -2, "name");
+    }
+}
+
 static int handle_read(lua_State *L)
 {
     int fd;
@@ -88,31 +124,56 @@ static int handle_read(lua_State *L)
     while(bytes >= sizeof(struct inotify_event)) {
         iev = (struct inotify_event *) (buffer + i);
 
-        lua_createtable(L, 0, 4);
-        lua_pushvalue(L, -1);
-        lua_rawseti(L, -3, n++);
-
-        lua_pushinteger(L, iev->wd);
-        lua_setfield(L, -2, "wd");
-
-        lua_pushinteger(L, iev->mask);
-        lua_setfield(L, -2, "mask");
-
-        lua_pushinteger(L, iev->cookie);
-        lua_setfield(L, -2, "cookie");
-
-        if(iev->len) {
-            lua_pushstring(L, iev->name);
-            lua_setfield(L, -2, "name");
-        }
-
-        lua_pop(L, 1);
+        push_inotify_event(L, iev);
+        lua_rawseti(L, -2, n++);
 
         i += (sizeof(struct inotify_event) + iev->len);
         bytes -= (sizeof(struct inotify_event) + iev->len);
     }
 
     return 1;
+}
+
+static int
+handle_events_iterator(lua_State *L)
+{
+    struct inotify_context *context;
+    struct inotify_event *event;
+    int fd;
+
+    fd      = get_inotify_handle(L, 1);
+    context = lua_touserdata(L, lua_upvalueindex(1));
+
+    if(context->bytes_remaining < sizeof(struct inotify_event)) {
+        context->offset = 0;
+
+        if((context->bytes_remaining = read(fd, context->buffer, READ_BUFFER_SIZE)) < 0) {
+            return luaL_error(L, "read error: %s\n", strerror(errno));
+        }
+    }
+    event = (struct inotify_event *) (context->buffer + context->offset);
+
+    context->bytes_remaining -= (sizeof(struct inotify_event) + event->len);
+    context->offset          += (sizeof(struct inotify_event) + event->len);
+
+    push_inotify_event(L, event);
+
+    return 1;
+}
+
+static int
+handle_events(lua_State *L)
+{
+    struct inotify_context *context;
+
+    context = lua_newuserdata(L, sizeof(struct inotify_context));
+
+    memset(context, 0, sizeof(struct inotify_context));
+
+    lua_pushcclosure(L, handle_events_iterator, 1);
+    lua_pushvalue(L, 1);
+
+    return 2;
 }
 
 static int handle_close(lua_State *L)
@@ -177,12 +238,39 @@ static luaL_Reg handle_funcs[] = {
     {"addwatch", handle_add_watch},
     {"rmwatch", handle_rm_watch},
     {"fileno", handle_fileno},
+    {"events", handle_events},
     {NULL, NULL}
 };
 
 #define register_constant(s)\
     lua_pushinteger(L, s);\
     lua_setfield(L, -2, #s);
+
+#if LINOTIFY_01_COMPAT
+static int
+inotify_proxy_table__index(lua_State *L)
+{
+    if(! lua_toboolean(L, lua_upvalueindex(3))) {
+        lua_getfield(L, lua_upvalueindex(1), "print");
+        lua_pushliteral(L, "Relying on the global table installed by require 'inotify' is deprecated.  Please use the return value of require in the future.");
+        lua_call(L, 1, 0);
+
+        lua_getfield(L, lua_upvalueindex(1), INOTIFY_LIB_NAME);
+        if(lua_equal(L, 1, -1)) {
+            lua_pushvalue(L, lua_upvalueindex(2));
+            lua_setfield(L, lua_upvalueindex(1), INOTIFY_LIB_NAME);
+        }
+        lua_pop(L, 1);
+
+        lua_pushboolean(L, 1);
+        lua_replace(L, lua_upvalueindex(3));
+    }
+
+    lua_pushvalue(L, 2);
+    lua_gettable(L, lua_upvalueindex(2));
+    return 1;
+}
+#endif
 
 int luaopen_inotify(lua_State *L)
 {
@@ -196,13 +284,29 @@ int luaopen_inotify(lua_State *L)
     lua_setfield(L, -2, "__index");
     lua_pushcfunction(L, handle__gc);
     lua_setfield(L, -2, "__gc");
+    lua_pushliteral(L, "inotify_handle");
+    lua_setfield(L, -2, "__type");
     lua_pop(L, 1);
 
-#if LUA_VERSION_NUM > 501
     lua_newtable(L);
+#if LUA_VERSION_NUM > 501
     luaL_setfuncs(L, inotify_funcs,0);
 #else
-    luaL_register(L, INOTIFY_LIB_NAME, inotify_funcs);
+    luaL_register(L, NULL, inotify_funcs);
+#endif
+
+#if LINOTIFY_01_COMPAT && LUA_VERSION_NUM <= 501
+    lua_newtable(L);
+    lua_pushvalue(L, -1);
+    lua_setglobal(L, "inotify");
+    lua_newtable(L);
+    lua_pushvalue(L, LUA_GLOBALSINDEX);
+    lua_pushvalue(L, -4);
+    lua_pushboolean(L, 0);
+    lua_pushcclosure(L, inotify_proxy_table__index, 3);
+    lua_setfield(L, -2, "__index");
+    lua_setmetatable(L, -2);
+    lua_pop(L, 1);
 #endif
 
     register_constant(IN_ACCESS);
