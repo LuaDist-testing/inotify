@@ -1,16 +1,16 @@
 -- This file was automatically generated for the LuaDist project.
 
 package = "inotify"
-version = "0.3-1"
+version = "0.4-1"
 -- LuaDist source
 source = {
-  tag = "0.3-1",
+  tag = "0.4-1",
   url = "git://github.com/LuaDist-testing/inotify.git"
 }
 -- Original source
 -- source = {
---         url = 'https://github.com/hoelzro/linotify/archive/0.3.tar.gz',
---         dir = 'linotify-0.3',
+--         url = 'https://github.com/hoelzro/linotify/archive/0.4.tar.gz',
+--         dir = 'linotify-0.4',
 -- }
 description = {
         summary  = "Inotify bindings for Lua",

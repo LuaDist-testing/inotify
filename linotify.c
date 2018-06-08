@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2009-2013 Robert Hoelz <rob@hoelz.ro>
+* Copyright (c) 2009-2014 Robert Hoelz <rob@hoelz.ro>
 *
 * Permission is hereby granted, free of charge, to any person obtaining a copy
 * of this software and associated documentation files (the "Software"), to deal
@@ -246,6 +246,7 @@ static luaL_Reg handle_funcs[] = {
     {"addwatch", handle_add_watch},
     {"rmwatch", handle_rm_watch},
     {"fileno", handle_fileno},
+    {"getfd", handle_fileno},
     {"events", handle_events},
     {NULL, NULL}
 };
